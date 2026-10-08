@@ -1,0 +1,16 @@
+{
+  "name": "waterline-backend",
+  "version": "1.0.0",
+  "description": "Serverless backend for WaterLine - Urban flood and drain hazard telemetry",
+  "main": "handlers/getPins.js",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.600.0",
+    "@aws-sdk/client-dynamodb": "^3.600.0",
+    "@aws-sdk/client-sns": "^3.600.0",
+    "@aws-sdk/lib-dynamodb": "^3.600.0"
+  }
+}
