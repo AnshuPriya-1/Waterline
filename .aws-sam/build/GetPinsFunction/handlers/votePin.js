@@ -23,10 +23,7 @@ export const handler = async (event) => {
       return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "Missing body" }) };
     }
 
-    const parsed = JSON.parse(event.body);
-    const city = typeof parsed.city === "string" ? parsed.city : "delhi";
-    const { sk, voteType } = parsed;
-    const deviceId = typeof parsed.deviceId === "string" ? parsed.deviceId.trim().slice(0, 60) : "";
+    const { city = "delhi", sk, voteType, deviceId = "anonymous" } = JSON.parse(event.body);
     if (!sk || !voteType) {
       return {
         statusCode: 400,
@@ -35,16 +32,7 @@ export const handler = async (event) => {
       };
     }
 
-    // A vote must come from an identifiable device, otherwise the one-vote rule can be skipped
-    if (!deviceId || deviceId === "anonymous") {
-      return {
-        statusCode: 400,
-        headers: corsHeaders,
-        body: JSON.stringify({ error: "deviceId is required to vote" })
-      };
-    }
-
-    const cleanCity = city.trim().toLowerCase().slice(0, 40);
+    const cleanCity = city.trim().toLowerCase();
     const nowEpoch = Math.floor(Date.now() / 1000);
     const pk = `CITY#${cleanCity}`;
 
@@ -60,13 +48,9 @@ export const handler = async (event) => {
     }
 
     const item = getRes.Item;
-    if (item.type !== "hazard") {
-      return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "Only hazard pins can be voted on" }) };
-    }
-
     const existingVoters = item.voters || [];
 
-    if (existingVoters.includes(deviceId)) {
+    if (deviceId !== "anonymous" && existingVoters.includes(deviceId)) {
       return {
         statusCode: 409,
         headers: corsHeaders,

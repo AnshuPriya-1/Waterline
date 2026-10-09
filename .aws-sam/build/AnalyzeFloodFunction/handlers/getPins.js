@@ -6,58 +6,53 @@ const ddb = DynamoDBDocumentClient.from(
 );
 const TABLE_NAME = process.env.TABLE_NAME || "WaterLine-Reports";
 
-const FLOOD_LIFETIME_SECONDS = 2700; // 45 minutes
-const OLD_HAZARD_SECONDS = 60 * 86400; // 60 days
-
-const corsHeaders = {
-  "Content-Type": "application/json",
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type"
-};
-
 export const handler = async (event) => {
+  const corsHeaders = {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type"
+  };
+
   if (event.requestContext?.http?.method === "OPTIONS" || event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers: corsHeaders, body: "" };
   }
 
   try {
-    const city = (event.queryStringParameters?.city || "delhi").trim().toLowerCase().slice(0, 40);
+    const city = (event.queryStringParameters?.city || "local").trim().toLowerCase();
     const nowEpoch = Math.floor(Date.now() / 1000);
-    const floodCutoff = nowEpoch - FLOOD_LIFETIME_SECONDS;
-    const oldHazardCutoff = nowEpoch - OLD_HAZARD_SECONDS;
+    const floodCutoff = nowEpoch - 2700; // Strictly 45 minutes
+    const oldHazardCutoff = nowEpoch - 60 * 86400; // 60 days
 
-    // Read all pages (DynamoDB returns at most 1 MB per call)
-    const allItems = [];
-    let lastKey;
-    do {
-      const response = await ddb.send(
-        new QueryCommand({
-          TableName: TABLE_NAME,
-          KeyConditionExpression: "PK = :pk",
-          ExpressionAttributeValues: { ":pk": `CITY#${city}` },
-          ExclusiveStartKey: lastKey
-        })
-      );
-      allItems.push(...(response.Items || []));
-      lastKey = response.LastEvaluatedKey;
-    } while (lastKey);
+    const queryCommand = new QueryCommand({
+      TableName: TABLE_NAME,
+      KeyConditionExpression: "PK = :pk",
+      ExpressionAttributeValues: {
+        ":pk": `CITY#${city}`
+      }
+    });
+
+    const response = await ddb.send(queryCommand);
+    const allItems = response.Items || [];
 
     const activePins = [];
 
     for (const item of allItems) {
+      // Normalize lat and lng fields
       const lat = item.lat !== undefined ? item.lat : item.latitude;
       const lng = item.lng !== undefined ? item.lng : item.longitude;
-      if (typeof lat !== "number" || typeof lng !== "number") continue;
+
+      if (typeof lat !== "number" || typeof lng !== "number") {
+        continue;
+      }
 
       if (item.type === "flood") {
-        // The 45-minute rule is enforced HERE. DynamoDB TTL deletes late, so it is cleanup only.
+        // Enforce in-code 45-minute freshness (TTL is only async cleanup)
         if (item.reportedAt >= floodCutoff) {
           activePins.push({
             id: item.id || item.SK,
             SK: item.SK,
             type: "flood",
-            city,
             lat,
             lng,
             level: item.level || "ankle",
@@ -65,18 +60,17 @@ export const handler = async (event) => {
             ageMinutes: Math.max(0, Math.floor((nowEpoch - item.reportedAt) / 60)),
             status: item.status || "unconfirmed",
             confirmedBy: item.confirmedBy || 1,
-            compoundHazardNearby: !!item.compoundHazardNearby,
-            isSampleData: !!item.isSampleData
+            compoundHazardNearby: !!item.compoundHazardNearby
           });
         }
       } else if (item.type === "hazard") {
+        // Return hazard unless 2+ votes marked it fixed
         if (item.status !== "fixed") {
           const isOldUnverified = item.lastConfirmedAt ? item.lastConfirmedAt < oldHazardCutoff : false;
           activePins.push({
             id: item.id || item.SK,
             SK: item.SK,
             type: "hazard",
-            city,
             lat,
             lng,
             hazardType: item.hazardType || "open_drain",
@@ -85,8 +79,7 @@ export const handler = async (event) => {
             lastConfirmedAt: item.lastConfirmedAt,
             fixedVotes: item.fixedVotes || 0,
             status: "active",
-            isOldUnverified,
-            isSampleData: !!item.isSampleData
+            isOldUnverified
           });
         }
       }
@@ -95,7 +88,11 @@ export const handler = async (event) => {
     return {
       statusCode: 200,
       headers: corsHeaders,
-      body: JSON.stringify({ pins: activePins, serverTime: nowEpoch, city })
+      body: JSON.stringify({
+        pins: activePins,
+        serverTime: nowEpoch,
+        city
+      })
     };
   } catch (err) {
     console.error("getPins error:", err);

@@ -1,0 +1,14 @@
+[
+  {
+    "hazardType": "open_drain",
+    "lat": 0,
+    "lng": 0,
+    "description": "EDIT ME: landmark, e.g. beside the tea stall, slab missing on the left edge"
+  },
+  {
+    "hazardType": "missing_manhole",
+    "lat": 0,
+    "lng": 0,
+    "description": "EDIT ME"
+  }
+]

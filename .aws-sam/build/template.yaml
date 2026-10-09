@@ -1,0 +1,171 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'WaterLine - Hyperlocal Urban Flood and Drain Hazard Telemetry WeMakeDevs
+  Bharat Builds Tour | Track 02: Heat and Water
+
+  '
+Parameters:
+  AlertEmail:
+    Type: String
+    Default: team.synvora.alerts@example.com
+    Description: Email address for immediate critical compound hazard alerts
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-haiku-20240307-v1:0
+    Description: Vision model enabled in your AWS Bedrock Model Access console
+Globals:
+  Function:
+    Timeout: 20
+    MemorySize: 256
+    Runtime: nodejs20.x
+    Environment:
+      Variables:
+        TABLE_NAME:
+          Ref: ReportsTable
+        CRITICAL_ALERT_SNS_TOPIC_ARN:
+          Ref: CriticalAlertsTopic
+        BEDROCK_MODEL_ID:
+          Ref: BedrockModelId
+Resources:
+  WaterLineApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+        - '*'
+        AllowMethods:
+        - GET
+        - POST
+        - OPTIONS
+        AllowHeaders:
+        - Content-Type
+        - Authorization
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+  ReportsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: WaterLine-Reports
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: PK
+        AttributeType: S
+      - AttributeName: SK
+        AttributeType: S
+      KeySchema:
+      - AttributeName: PK
+        KeyType: HASH
+      - AttributeName: SK
+        KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+  CriticalAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: waterline-critical-compound-alerts
+  EmailAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn:
+        Ref: CriticalAlertsTopic
+      Protocol: email
+      Endpoint:
+        Ref: AlertEmail
+  AnalyzeFloodFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: AnalyzeFloodFunction
+      Handler: handlers/analyzeFlood.handler
+      Policies:
+      - Statement:
+        - Effect: Allow
+          Action:
+          - bedrock:InvokeModel
+          Resource: '*'
+      Events:
+        AnalyzeApi:
+          Type: HttpApi
+          Properties:
+            Path: /analyze
+            Method: post
+            ApiId:
+              Ref: WaterLineApi
+    Metadata:
+      SamResourceId: AnalyzeFloodFunction
+  CreateReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: CreateReportFunction
+      Handler: handlers/createReport.handler
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: ReportsTable
+      - SNSPublishMessagePolicy:
+          TopicName:
+            Fn::GetAtt:
+            - CriticalAlertsTopic
+            - TopicName
+      Events:
+        CreateReportApi:
+          Type: HttpApi
+          Properties:
+            Path: /reports
+            Method: post
+            ApiId:
+              Ref: WaterLineApi
+    Metadata:
+      SamResourceId: CreateReportFunction
+  GetPinsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: GetPinsFunction
+      Handler: handlers/getPins.handler
+      Policies:
+      - DynamoDBReadPolicy:
+          TableName:
+            Ref: ReportsTable
+      Events:
+        GetPinsApi:
+          Type: HttpApi
+          Properties:
+            Path: /pins
+            Method: get
+            ApiId:
+              Ref: WaterLineApi
+    Metadata:
+      SamResourceId: GetPinsFunction
+  VotePinFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: VotePinFunction
+      Handler: handlers/votePin.handler
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: ReportsTable
+      Events:
+        VotePinApi:
+          Type: HttpApi
+          Properties:
+            Path: /pins/vote
+            Method: post
+            ApiId:
+              Ref: WaterLineApi
+    Metadata:
+      SamResourceId: VotePinFunction
+Outputs:
+  HttpApiUrl:
+    Description: URL of the WaterLine HTTP API Gateway
+    Value:
+      Fn::Sub: https://${WaterLineApi}.execute-api.${AWS::Region}.amazonaws.com
+  DynamoDBTableName:
+    Description: DynamoDB Reports Table
+    Value:
+      Ref: ReportsTable
+  SnsTopicArn:
+    Description: SNS Alert Topic ARN
+    Value:
+      Ref: CriticalAlertsTopic

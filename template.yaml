@@ -7,18 +7,19 @@ Description: >
 Parameters:
   AlertEmail:
     Type: String
-    Default: 'team.synvora.alerts@example.com'
-    Description: Email address for immediate critical compound hazard alerts
+    Description: Your REAL email. AWS sends a confirmation link to it; click it or no alert emails will arrive.
   BedrockModelId:
     Type: String
     Default: 'anthropic.claude-3-haiku-20240307-v1:0'
-    Description: Vision model enabled in your AWS Bedrock Model Access console
+    Description: >
+      Vision model ID (or inference profile ID) that YOUR account can call in this region.
+      Check the Bedrock console. If Bedrock is blocked, the app still works: the AI hint just returns 'unknown'.
 
 Globals:
   Function:
     Timeout: 20
     MemorySize: 256
-    Runtime: nodejs20.x
+    Runtime: nodejs22.x
     Environment:
       Variables:
         TABLE_NAME: !Ref ReportsTable
@@ -44,11 +45,10 @@ Resources:
         ThrottlingBurstLimit: 20
         ThrottlingRateLimit: 10
 
-  # Single Table with native TTL cleanup
+  # Single table. TTL is only background cleanup (it deletes late); the 45-minute rule is enforced in getPins.
   ReportsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: WaterLine-Reports
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: PK
