@@ -1,5 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { SNSClient, PublishCommand } from "@aws-sdk/client-sns";
 import { randomUUID } from "crypto";
 import { haversineDistanceMeters } from "../utils/geo.js";
@@ -30,13 +30,21 @@ export const handler = async (event) => {
     }
 
     const payload = JSON.parse(event.body);
-    const { city = "local", type, lat, lng, level, hazardType, description = "" } = payload;
+    const { city = "delhi", type, lat, lng, level, hazardType, description = "", deviceId = "anonymous" } = payload;
 
-    if (!type || typeof lat !== "number" || typeof lng !== "number") {
+    if (typeof lat !== "number" || typeof lng !== "number" || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ error: "type, lat, and lng are required numbers" })
+        body: JSON.stringify({ error: "lat (-90 to 90) and lng (-180 to 180) are required valid numbers" })
+      };
+    }
+
+    if (!type || (type !== "flood" && type !== "hazard")) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({ error: "type must be 'flood' or 'hazard'" })
       };
     }
 
@@ -50,7 +58,6 @@ export const handler = async (event) => {
       const allowedLevels = ["ankle", "knee", "waist", "stalled"];
       const finalLevel = allowedLevels.includes(level?.toLowerCase()) ? level.toLowerCase() : "ankle";
 
-      // Query active pins in city to check for 2-report agreement and 50m hazard proximity
       const existingQuery = await ddb.send(
         new QueryCommand({
           TableName: TABLE_NAME,
@@ -60,9 +67,8 @@ export const handler = async (event) => {
       );
 
       const items = existingQuery.Items || [];
-      const floodCutoff = nowEpoch - 2700; // 45 minutes
+      const floodCutoff = nowEpoch - 2700;
 
-      // Rule: Check if another flood report is within 100m in the last 45 minutes
       const nearbyFloods = items.filter((it) => {
         if (it.type === "flood" && it.reportedAt >= floodCutoff) {
           const dist = haversineDistanceMeters(lat, lng, it.lat, it.lng);
@@ -74,7 +80,24 @@ export const handler = async (event) => {
       const isConfirmed = nearbyFloods.length > 0;
       const confirmedCount = isConfirmed ? nearbyFloods.length + 1 : 1;
 
-      // Rule: Check if any known hazard is within 50m (Compound Risk)
+      if (isConfirmed) {
+        for (const older of nearbyFloods) {
+          try {
+            await ddb.send(
+              new UpdateCommand({
+                TableName: TABLE_NAME,
+                Key: { PK: older.PK || `CITY#${cleanCity}`, SK: older.SK },
+                UpdateExpression: "SET #st = :s, confirmedBy = :c",
+                ExpressionAttributeNames: { "#st": "status" },
+                ExpressionAttributeValues: { ":s": "confirmed", ":c": confirmedCount }
+              })
+            );
+          } catch (updateErr) {
+            console.warn("Failed to update older flood pin status:", updateErr.message);
+          }
+        }
+      }
+
       let compoundDanger = null;
       for (const it of items) {
         if (it.type === "hazard" && it.status !== "fixed") {
@@ -86,25 +109,24 @@ export const handler = async (event) => {
         }
       }
 
-      // If compound danger found, dispatch SNS alert email
       if (compoundDanger && SNS_TOPIC_ARN) {
         try {
           await sns.send(
             new PublishCommand({
               TopicArn: SNS_TOPIC_ARN,
-              Subject: `[WaterLine ALERT] Submerged Hazard Detected in ${cleanCity.toUpperCase()}`,
-              Message: `CRITICAL ALERT:
+              Subject: `[WaterLine ALERT] Submerged Road Hazard Detected in ${cleanCity.toUpperCase()}`,
+              Message: `CRITICAL WATERLINE TELEMETRY ALERT:
 A new flood report (${finalLevel} depth) was submitted within ${compoundDanger.dist}m of a known ${compoundDanger.hazard.hazardType.replace("_", " ")}.
 
 Coordinates: ${lat.toFixed(5)}, ${lng.toFixed(5)}
 Reported At: ${new Date(nowEpoch * 1000).toISOString()}
-Status: High Risk - Submerged drain/hazard hazard.
+Status: HIGHER RISK - Water may be hiding submerged open drain/manhole.
 
 WaterLine Telemetry Engine`
             })
           );
         } catch (snsErr) {
-          console.warn("SNS Alert delivery failed (non-critical):", snsErr.message);
+          console.warn("SNS Alert delivery failed:", snsErr.message);
         }
       }
 
@@ -121,9 +143,10 @@ WaterLine Telemetry Engine`
         status: isConfirmed ? "confirmed" : "unconfirmed",
         confirmedBy: confirmedCount,
         compoundHazardNearby: !!compoundDanger,
-        ttl: nowEpoch + 2700 // Cleanup TTL
+        deviceId: deviceId.slice(0, 60),
+        ttl: nowEpoch + 2700
       };
-    } else if (type === "hazard") {
+    } else {
       const allowedHazards = ["open_drain", "missing_manhole", "deep_pothole"];
       const finalHazard = allowedHazards.includes(hazardType?.toLowerCase())
         ? hazardType.toLowerCase()
@@ -142,13 +165,8 @@ WaterLine Telemetry Engine`
         reportedAt: nowEpoch,
         lastConfirmedAt: nowEpoch,
         fixedVotes: 0,
-        status: "active"
-      };
-    } else {
-      return {
-        statusCode: 400,
-        headers: corsHeaders,
-        body: JSON.stringify({ error: "Invalid type. Must be 'flood' or 'hazard'." })
+        status: "active",
+        deviceId: deviceId.slice(0, 60)
       };
     }
 

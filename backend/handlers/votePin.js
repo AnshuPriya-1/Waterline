@@ -23,7 +23,7 @@ export const handler = async (event) => {
       return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: "Missing body" }) };
     }
 
-    const { city = "local", sk, voteType } = JSON.parse(event.body);
+    const { city = "delhi", sk, voteType, deviceId = "anonymous" } = JSON.parse(event.body);
     if (!sk || !voteType) {
       return {
         statusCode: 400,
@@ -34,10 +34,8 @@ export const handler = async (event) => {
 
     const cleanCity = city.trim().toLowerCase();
     const nowEpoch = Math.floor(Date.now() / 1000);
-
     const pk = `CITY#${cleanCity}`;
 
-    // Get current item to inspect votes
     const getRes = await ddb.send(
       new GetCommand({
         TableName: TABLE_NAME,
@@ -50,6 +48,19 @@ export const handler = async (event) => {
     }
 
     const item = getRes.Item;
+    const existingVoters = item.voters || [];
+
+    if (deviceId !== "anonymous" && existingVoters.includes(deviceId)) {
+      return {
+        statusCode: 409,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          error: "This device has already recorded a vote for this hazard."
+        })
+      };
+    }
+
+    const updatedVoters = [...existingVoters, deviceId];
 
     if (voteType === "fixed") {
       const currentVotes = (item.fixedVotes || 0) + 1;
@@ -59,9 +70,13 @@ export const handler = async (event) => {
         new UpdateCommand({
           TableName: TABLE_NAME,
           Key: { PK: pk, SK: sk },
-          UpdateExpression: "SET fixedVotes = :v, #st = :s",
+          UpdateExpression: "SET fixedVotes = :v, #st = :s, voters = :voters",
           ExpressionAttributeNames: { "#st": "status" },
-          ExpressionAttributeValues: { ":v": currentVotes, ":s": newStatus }
+          ExpressionAttributeValues: {
+            ":v": currentVotes,
+            ":s": newStatus,
+            ":voters": updatedVoters
+          }
         })
       );
 
@@ -73,7 +88,7 @@ export const handler = async (event) => {
           voteType: "fixed",
           fixedVotes: currentVotes,
           status: newStatus,
-          message: newStatus === "fixed" ? "Hazard verified as fixed and removed from map." : "1 more verification needed to remove."
+          message: newStatus === "fixed" ? "Hazard verified as fixed and retired from map." : "1 more verification needed to retire."
         })
       };
     } else if (voteType === "still_there") {
@@ -81,9 +96,13 @@ export const handler = async (event) => {
         new UpdateCommand({
           TableName: TABLE_NAME,
           Key: { PK: pk, SK: sk },
-          UpdateExpression: "SET lastConfirmedAt = :t, #st = :s",
+          UpdateExpression: "SET lastConfirmedAt = :t, #st = :s, voters = :voters",
           ExpressionAttributeNames: { "#st": "status" },
-          ExpressionAttributeValues: { ":t": nowEpoch, ":s": "active" }
+          ExpressionAttributeValues: {
+            ":t": nowEpoch,
+            ":s": "active",
+            ":voters": updatedVoters
+          }
         })
       );
 

@@ -5,6 +5,8 @@
   "main": "handlers/getPins.js",
   "type": "module",
   "scripts": {
+    "dev": "node dev-server.js",
+    "start": "node dev-server.js",
     "test": "node --test"
   },
   "dependencies": {

@@ -5,6 +5,7 @@ const MODEL_ID = process.env.BEDROCK_MODEL_ID || "anthropic.claude-3-haiku-20240
 
 const ALLOWED_LEVELS = ["ankle", "knee", "waist", "stalled", "unknown"];
 const ALLOWED_CONFIDENCE = ["low", "medium", "high"];
+const MAX_BASE64_LENGTH = 2 * 1024 * 1024; // 1.5 MB uncompressed
 
 export const handler = async (event) => {
   const corsHeaders = {
@@ -36,7 +37,15 @@ export const handler = async (event) => {
       };
     }
 
-    const prompt = `You are a specialized vision assistant estimating street waterlogging depth from a commuter perspective.
+    if (base64Image.length > MAX_BASE64_LENGTH) {
+      return {
+        statusCode: 413,
+        headers: corsHeaders,
+        body: JSON.stringify({ error: "Image payload exceeds maximum allowed size (1.5MB). Please compress in client." })
+      };
+    }
+
+    const prompt = `You are an assistant estimating street waterlogging depth from a commuter perspective.
 Examine this street photo for water depth using physical reference anchors:
 - Vehicle wheels (tire contact, rim level, hub level, tailpipe, engine stall depth)
 - Pedestrian legs (ankle, calf, knee, thigh, waist)
@@ -81,7 +90,6 @@ If no water is present, lighting is too poor, or water depth is ambiguous, retur
 
     const rawText = parsedBody.content?.[0]?.text?.trim() || "";
     
-    // Robust JSON extraction using regex in case the model returns markdown codeblocks
     const jsonMatch = rawText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
       throw new Error("Model response did not contain a valid JSON block");
@@ -89,7 +97,6 @@ If no water is present, lighting is too poor, or water depth is ambiguous, retur
 
     const parsedOutput = JSON.parse(jsonMatch[0]);
 
-    // Validation & normalization against allowed enums
     const suggestedLevel = ALLOWED_LEVELS.includes(parsedOutput.suggestedLevel?.toLowerCase())
       ? parsedOutput.suggestedLevel.toLowerCase()
       : "unknown";
@@ -119,7 +126,6 @@ If no water is present, lighting is too poor, or water depth is ambiguous, retur
     };
   } catch (err) {
     console.error("Bedrock analyzeFlood error:", err);
-    // Non-blocking fallback response so user is never stranded
     return {
       statusCode: 200,
       headers: corsHeaders,

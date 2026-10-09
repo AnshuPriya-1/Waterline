@@ -1,10 +1,20 @@
 import { getSamplePins } from "../data/initialSampleData";
 import { haversineDistanceMeters } from "./routeChecker";
+import { APP_CONFIG } from "../config";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
-// In-browser fallback store for local testing & guaranteed demo reliability
-const STORAGE_KEY = "waterline_local_pins_v1";
+const STORAGE_KEY = "waterline_local_pins_v2";
+const DEVICE_ID_KEY = "waterline_client_device_id";
+
+export function getOrCreateDeviceId() {
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    id = "dev-" + Math.random().toString(36).substring(2, 11) + "-" + Date.now().toString(36);
+    localStorage.setItem(DEVICE_ID_KEY, id);
+  }
+  return id;
+}
 
 function getLocalStore() {
   const existing = localStorage.getItem(STORAGE_KEY);
@@ -24,28 +34,40 @@ function saveLocalStore(pins) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(pins));
 }
 
+let isLiveConnected = Boolean(API_BASE);
+
 export const api = {
-  /**
-   * Fetches active map pins with strict 45-minute flood filter
-   */
-  async getPins(city = "delhi") {
+  isConfiguredWithLiveApi() {
+    return Boolean(API_BASE);
+  },
+
+  isLiveConnected() {
+    return isLiveConnected;
+  },
+
+  async getPins(city = APP_CONFIG.DEFAULT_CITY) {
     if (API_BASE) {
       try {
         const res = await fetch(`${API_BASE}/pins?city=${encodeURIComponent(city)}`);
         if (res.ok) {
           const data = await res.json();
+          isLiveConnected = true;
           return data.pins;
+        } else {
+          isLiveConnected = false;
         }
       } catch (err) {
-        console.warn("Live API unavailable, falling back to local storage:", err.message);
+        console.warn("Live API /pins unavailable. Falling back to local store:", err.message);
+        isLiveConnected = false;
       }
+    } else {
+      isLiveConnected = false;
     }
 
-    // Local fallback with strict 45-minute in-code filtering
     const all = getLocalStore();
     const now = Math.floor(Date.now() / 1000);
-    const floodCutoff = now - 2700; // 45 mins
-    const oldCutoff = now - 60 * 86400; // 60 days
+    const floodCutoff = now - APP_CONFIG.FLOOD_PIN_LIFETIME_MINUTES * 60;
+    const oldCutoff = now - 60 * 86400;
 
     return all.filter((p) => {
       if (p.type === "hazard") {
@@ -61,9 +83,6 @@ export const api = {
     });
   },
 
-  /**
-   * Calls Bedrock Vision analyze endpoint or returns high-accuracy simulated heuristic
-   */
   async analyzeFloodPhoto(base64Image) {
     if (API_BASE) {
       try {
@@ -73,58 +92,61 @@ export const api = {
           body: JSON.stringify({ base64Image })
         });
         if (res.ok) {
+          isLiveConnected = true;
           return await res.json();
+        } else {
+          isLiveConnected = false;
         }
       } catch (err) {
-        console.warn("Live Bedrock API unreachable, falling back to local analysis:", err.message);
+        console.warn("Live Bedrock API call failed:", err.message);
+        isLiveConnected = false;
       }
+    } else {
+      isLiveConnected = false;
     }
 
-    // Simulated local fallback for demo resilience
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        resolve({
-          suggestedLevel: "knee",
-          confidence: "medium",
-          referenceObject: "Sedan wheel rim submerged to center hub",
-          reasoning: "Water level covers vehicle lower wheel arches. Estimated depth ~1.5 ft.",
-          notice: "Water can hide open drains. This is an estimate, not a guarantee.",
-          isLocalSimulation: !API_BASE
-        });
-      }, 900);
-    });
+    // Honest offline fallback: NEVER fakes "knee" or a fake explanation!
+    return {
+      suggestedLevel: "unknown",
+      confidence: "low",
+      referenceObject: "none",
+      reasoning: "Offline Demo Mode: Automated Bedrock vision is unavailable without live AWS backend. Please tap your observed depth below.",
+      notice: "Water can hide open drains. This is an estimate, not a guarantee.",
+      isOffline: true
+    };
   },
 
-  /**
-   * Submits a new flood or hazard report
-   */
   async submitReport(payload) {
-    const { city = "delhi", type, lat, lng, level, hazardType, description = "" } = payload;
+    const { city = APP_CONFIG.DEFAULT_CITY, type, lat, lng, level, hazardType, description = "" } = payload;
 
     if (API_BASE) {
       try {
         const res = await fetch(`${API_BASE}/reports`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
+          body: JSON.stringify({
+            ...payload,
+            deviceId: getOrCreateDeviceId()
+          })
         });
         if (res.ok) {
+          isLiveConnected = true;
           const data = await res.json();
           return data.item;
         }
       } catch (err) {
-        console.warn("Live API /reports call failed, using local storage:", err.message);
+        console.warn("Live API /reports call failed, recording locally:", err.message);
+        isLiveConnected = false;
       }
     }
 
-    // Local simulation of 2-report agreement and 50m compound hazard detection
     const current = getLocalStore();
     const now = Math.floor(Date.now() / 1000);
     const newId = `report-${Date.now()}`;
 
     let newItem;
     if (type === "flood") {
-      const floodCutoff = now - 2700;
+      const floodCutoff = now - APP_CONFIG.FLOOD_PIN_LIFETIME_MINUTES * 60;
       const nearbyFloods = current.filter(
         (p) =>
           p.type === "flood" &&
@@ -133,11 +155,20 @@ export const api = {
       );
 
       const isConfirmed = nearbyFloods.length > 0;
+      const confirmedCount = isConfirmed ? nearbyFloods.length + 1 : 1;
+
+      if (isConfirmed) {
+        for (const older of nearbyFloods) {
+          older.status = "confirmed";
+          older.confirmedBy = Math.max(older.confirmedBy || 1, confirmedCount);
+        }
+      }
+
       const nearbyHazard = current.find(
         (p) =>
           p.type === "hazard" &&
           p.status !== "fixed" &&
-          haversineDistanceMeters(lat, lng, p.lat, p.lng) <= 50
+          haversineDistanceMeters(lat, lng, p.lat, p.lng) <= APP_CONFIG.COMPOUND_DANGER_RADIUS_METERS
       );
 
       newItem = {
@@ -151,8 +182,9 @@ export const api = {
         reportedAt: now,
         ageMinutes: 0,
         status: isConfirmed ? "confirmed" : "unconfirmed",
-        confirmedBy: isConfirmed ? nearbyFloods.length + 1 : 1,
-        compoundHazardNearby: !!nearbyHazard
+        confirmedBy: confirmedCount,
+        compoundHazardNearby: !!nearbyHazard,
+        isSampleData: false
       };
     } else {
       newItem = {
@@ -167,7 +199,8 @@ export const api = {
         reportedAt: now,
         lastConfirmedAt: now,
         fixedVotes: 0,
-        status: "active"
+        status: "active",
+        isSampleData: false
       };
     }
 
@@ -176,18 +209,25 @@ export const api = {
     return newItem;
   },
 
-  /**
-   * Casts a "still_there" or "fixed" vote
-   */
-  async voteHazard(sk, voteType, city = "delhi") {
+  async voteHazard(sk, voteType, city = APP_CONFIG.DEFAULT_CITY) {
+    const deviceId = getOrCreateDeviceId();
+    const votedKey = `voted_${sk}`;
+    if (localStorage.getItem(votedKey)) {
+      return {
+        success: false,
+        error: "This device has already voted on this hazard."
+      };
+    }
+
     if (API_BASE) {
       try {
         const res = await fetch(`${API_BASE}/pins/vote`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sk, voteType, city })
+          body: JSON.stringify({ sk, voteType, city, deviceId })
         });
         if (res.ok) {
+          localStorage.setItem(votedKey, voteType);
           return await res.json();
         }
       } catch (err) {
@@ -208,15 +248,13 @@ export const api = {
       } else if (voteType === "still_there") {
         target.lastConfirmedAt = now;
       }
+      localStorage.setItem(votedKey, voteType);
       saveLocalStore(current);
       return { success: true, target };
     }
-    return { success: false };
+    return { success: false, error: "Hazard not found" };
   },
 
-  /**
-   * Resets demo data back to clean sample state
-   */
   resetSampleData() {
     localStorage.removeItem(STORAGE_KEY);
     return getLocalStore();
