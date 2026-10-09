@@ -5,7 +5,7 @@ const MODEL_ID = process.env.BEDROCK_MODEL_ID || "anthropic.claude-3-haiku-20240
 
 const ALLOWED_LEVELS = ["ankle", "knee", "waist", "stalled", "unknown"];
 const ALLOWED_CONFIDENCE = ["low", "medium", "high"];
-const MAX_BASE64_LENGTH = 2 * 1024 * 1024; // 1.5 MB uncompressed
+const MAX_BASE64_LENGTH = 2 * 1024 * 1024; // about 2 million characters of base64 (roughly 1.5 MB of image)
 
 export const handler = async (event) => {
   const corsHeaders = {
@@ -41,7 +41,7 @@ export const handler = async (event) => {
       return {
         statusCode: 413,
         headers: corsHeaders,
-        body: JSON.stringify({ error: "Image payload exceeds maximum allowed size (1.5MB). Please compress in client." })
+        body: JSON.stringify({ error: "Image is too large. The app shrinks photos before sending, so please try again." })
       };
     }
 

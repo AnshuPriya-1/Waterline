@@ -4,3 +4,6 @@ node_modules/
 dist/
 .env*
 scripts/hazards.json
+.aws-sam/
+samconfig.toml
+waterline-dist.zip

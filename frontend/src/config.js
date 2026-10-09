@@ -4,17 +4,17 @@
  */
 export const APP_CONFIG = {
   // City identifier used as the DynamoDB partition key (e.g. 'delhi', 'patna', 'mumbai')
-  DEFAULT_CITY: "delhi",
+  DEFAULT_CITY: "muzaffarpur",
 
   // Default map centre [lat, lng] and zoom
-  DEFAULT_MAP_CENTER: [28.7505, 77.1188],
+  DEFAULT_MAP_CENTER: [26.1209, 85.3647],
   DEFAULT_ZOOM: 15,
 
   // "Load Preset Route" button: two points on a real road in YOUR city.
   // Pick a road that passes near one of your real hazards.
   PRESET_ROUTE: {
-    start: { lat: 28.747, lng: 77.1235 },
-    end: { lat: 28.7545, lng: 77.113 }
+    start: { lat: 26.1209, lng: 85.3647 }, // Motijheel / City Center, Muzaffarpur
+    end: { lat: 26.1385, lng: 85.3780 }   // Burhi Gandak Bridge / Embankment Highway
   },
 
   // How close a hazard must be to the road to be flagged (meters)
