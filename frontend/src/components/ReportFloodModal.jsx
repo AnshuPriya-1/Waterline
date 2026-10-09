@@ -1,46 +1,68 @@
-import React, { useState } from 'react';
-import { Check, Droplets, Loader2, MapPin, Upload, X, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Check, Droplets, Loader2, MapPin, Upload, X, AlertCircle, AlertTriangle } from 'lucide-react';
 import { resizeImage } from '../utils/imageResizer';
 import { api } from '../utils/api';
 import { APP_CONFIG } from '../config';
+import { getCurrentPosition } from '../utils/location';
+import { haversineDistanceMeters } from '../utils/routeChecker';
 
 const LEVEL_OPTIONS = [
-  { id: 'ankle', label: 'Ankle Level', depth: '< 6 inches', color: 'border-sky-300 bg-sky-50 text-sky-900' },
-  { id: 'knee', label: 'Knee Level', depth: '~1.5 feet', color: 'border-blue-400 bg-blue-50 text-blue-900' },
-  { id: 'waist', label: 'Waist Level', depth: '~3.0 feet', color: 'border-amber-400 bg-amber-50 text-amber-950' },
-  { id: 'stalled', label: 'Vehicle Stall', depth: '> Exhaust pipe', color: 'border-red-400 bg-red-50 text-red-950' }
+  { id: 'ankle', label: 'Ankle Level', depth: 'less than 6 inches', color: 'border-sky-300 bg-sky-50 text-sky-900' },
+  { id: 'knee', label: 'Knee Level', depth: 'about 1.5 feet', color: 'border-blue-400 bg-blue-50 text-blue-900' },
+  { id: 'waist', label: 'Waist Level', depth: 'about 3 feet', color: 'border-amber-400 bg-amber-50 text-amber-950' },
+  { id: 'stalled', label: 'Vehicle Stalls', depth: 'above the exhaust pipe', color: 'border-red-400 bg-red-50 text-red-950' }
 ];
 
-export default function ReportFloodModal({ isOpen, onClose, defaultCoords, onReportCreated }) {
+export default function ReportFloodModal({ isOpen, onClose, defaultCoords, pins = [], onReportCreated }) {
   const [photoPreview, setPhotoPreview] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState(null);
-  const [userConfirmedLevel, setUserConfirmedLevel] = useState('knee');
-  const [coords, setCoords] = useState(defaultCoords || { lat: APP_CONFIG.DEFAULT_MAP_CENTER[0], lng: APP_CONFIG.DEFAULT_MAP_CENTER[1] });
+  const [userConfirmedLevel, setUserConfirmedLevel] = useState(null);
+  const [coords, setCoords] = useState(defaultCoords);
+  const [accuracy, setAccuracy] = useState(null);
   const [isLocating, setIsLocating] = useState(false);
   const [locatingError, setLocatingError] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
+
+  // Fresh form and the latest map tap every time the modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setPhotoPreview(null);
+      setAiSuggestion(null);
+      setUserConfirmedLevel(null);
+      setCoords(defaultCoords);
+      setAccuracy(null);
+      setLocatingError(null);
+      setSubmitError(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
+
+  // NEW FEATURE: warn BEFORE publishing if a known hazard sits near this spot
+  const nearbyHazards = useMemo(() => {
+    if (!coords) return [];
+    return pins
+      .filter((p) => p.type === 'hazard' && p.status !== 'fixed')
+      .map((p) => ({ ...p, distance: Math.round(haversineDistanceMeters(coords.lat, coords.lng, p.lat, p.lng)) }))
+      .filter((p) => p.distance <= APP_CONFIG.COMPOUND_DANGER_RADIUS_METERS)
+      .sort((a, b) => a.distance - b.distance);
+  }, [pins, coords]);
 
   if (!isOpen) return null;
 
-  const handleUseCurrentLocation = () => {
-    if (!navigator.geolocation) {
-      setLocatingError("Geolocation is not supported by your browser.");
-      return;
-    }
+  const handleUseCurrentLocation = async () => {
     setIsLocating(true);
     setLocatingError(null);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-        setIsLocating(false);
-      },
-      (err) => {
-        setLocatingError(`Unable to retrieve GPS: ${err.message}`);
-        setIsLocating(false);
-      },
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
+    try {
+      const pos = await getCurrentPosition();
+      setCoords({ lat: pos.lat, lng: pos.lng });
+      setAccuracy(pos.accuracy);
+    } catch (err) {
+      setLocatingError(err.message);
+    } finally {
+      setIsLocating(false);
+    }
   };
 
   const handleFileChange = async (e) => {
@@ -59,15 +81,17 @@ export default function ReportFloodModal({ isOpen, onClose, defaultCoords, onRep
         setUserConfirmedLevel(analysis.suggestedLevel);
       }
     } catch (err) {
-      console.error("Image processing error:", err);
-      alert("Failed to read image. Please choose depth manually.");
+      console.error('Image processing error:', err);
+      setSubmitError('Could not read that image. Please choose the water level yourself.');
     } finally {
       setIsAnalyzing(false);
     }
   };
 
   const handleSubmit = async () => {
+    if (!userConfirmedLevel) return;
     setIsSubmitting(true);
+    setSubmitError(null);
     try {
       const created = await api.submitReport({
         city: APP_CONFIG.DEFAULT_CITY,
@@ -76,15 +100,18 @@ export default function ReportFloodModal({ isOpen, onClose, defaultCoords, onRep
         lng: coords.lng,
         level: userConfirmedLevel
       });
-
       onReportCreated(created);
       onClose();
     } catch (err) {
-      alert("Failed to submit report. Please try again.");
+      setSubmitError(err.message || 'Could not save the report.');
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  const aiLevelLabel = aiSuggestion?.suggestedLevel && aiSuggestion.suggestedLevel !== 'unknown'
+    ? aiSuggestion.suggestedLevel
+    : null;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
@@ -96,12 +123,18 @@ export default function ReportFloodModal({ isOpen, onClose, defaultCoords, onRep
             </div>
             <div>
               <h3 className="font-bold text-neutral-900 text-base">Report Waterlogging</h3>
-              <p className="text-[11px] font-mono text-neutral-500">Short-lived pin · Decays after 45m strictly</p>
+              <p className="text-[11px] font-mono text-neutral-500">
+                Shown on the map for {APP_CONFIG.FLOOD_PIN_LIFETIME_MINUTES} minutes
+              </p>
             </div>
           </div>
           <button onClick={onClose} className="text-neutral-400 hover:text-neutral-700">
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        <div className="text-[11px] text-neutral-500 font-mono">
+          Do not use your phone while riding. Stop in a safe place first.
         </div>
 
         <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-xl space-y-2 text-xs">
@@ -114,12 +147,19 @@ export default function ReportFloodModal({ isOpen, onClose, defaultCoords, onRep
               className="text-aws-blue hover:underline font-semibold flex items-center gap-1 font-mono text-[11px]"
             >
               {isLocating ? <Loader2 className="w-3 h-3 animate-spin" /> : <MapPin className="w-3 h-3" />}
-              <span>{isLocating ? 'Acquiring GPS...' : 'Use My Current Location'}</span>
+              <span>{isLocating ? 'Getting GPS...' : 'Use My Current Location'}</span>
             </button>
           </div>
           <div className="font-mono text-neutral-600">
-            Coordinates: {coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}
+            {coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}
+            {accuracy !== null && <span className="text-neutral-400"> (GPS ±{accuracy} m)</span>}
           </div>
+          {accuracy !== null && accuracy > 50 && (
+            <div className="text-[11px] text-amber-700 flex items-center gap-1">
+              <AlertCircle className="w-3 h-3 shrink-0" />
+              <span>GPS is weak here, so the pin may be off by about {accuracy} m.</span>
+            </div>
+          )}
           {locatingError && (
             <div className="text-[11px] text-amber-700 flex items-center gap-1">
               <AlertCircle className="w-3 h-3 shrink-0" />
@@ -128,9 +168,24 @@ export default function ReportFloodModal({ isOpen, onClose, defaultCoords, onRep
           )}
         </div>
 
+        {nearbyHazards.length > 0 && (
+          <div className="p-3 bg-red-50 border-2 border-red-400 rounded-xl text-xs text-red-900 space-y-1">
+            <div className="flex items-center gap-1.5 font-black text-red-700">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>HIGHER RISK: KNOWN HAZARD NEARBY</span>
+            </div>
+            {nearbyHazards.slice(0, 3).map((h) => (
+              <p key={h.id || h.SK} className="leading-relaxed">
+                A {h.hazardType?.replace('_', ' ')} was reported about {h.distance} m from here
+                {h.isSampleData ? ' (sample data)' : ''}. Floodwater may be hiding it. Keep away from this spot.
+              </p>
+            ))}
+          </div>
+        )}
+
         <div className="space-y-2">
           <label className="block text-xs font-bold text-neutral-700 uppercase tracking-wide">
-            Step 1: Street Photo (Compressed &lt;200KB in browser)
+            Step 1 (optional): Street photo for an AI hint
           </label>
 
           {photoPreview ? (
@@ -152,14 +207,14 @@ export default function ReportFloodModal({ isOpen, onClose, defaultCoords, onRep
                 <Upload className="w-5 h-5" />
               </div>
               <div className="space-y-0.5">
-                <p className="text-xs font-semibold text-neutral-800">Select real street water photo</p>
+                <p className="text-xs font-semibold text-neutral-800">Choose a photo of the water</p>
                 <p className="text-[11px] text-neutral-500">
-                  Resized to max 1000px before transmission. Photos are processed ephemerally and discarded.
+                  The photo is shrunk on your phone, analysed once and not stored.
                 </p>
               </div>
               <div className="pt-1">
                 <label className="bg-neutral-900 hover:bg-neutral-800 text-white px-4 py-2 rounded-lg text-xs font-medium cursor-pointer shadow-sm inline-block">
-                  Choose Photo from Device
+                  Choose Photo
                   <input type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
                 </label>
               </div>
@@ -170,7 +225,7 @@ export default function ReportFloodModal({ isOpen, onClose, defaultCoords, onRep
         {isAnalyzing && (
           <div className="p-3 bg-sky-50 border border-sky-200 rounded-xl flex items-center gap-3 text-xs text-sky-900">
             <Loader2 className="w-4 h-4 animate-spin text-aws-blue shrink-0" />
-            <span>Analyzing image anchors via Amazon Bedrock Vision...</span>
+            <span>Getting an AI hint for the water level...</span>
           </div>
         )}
 
@@ -181,16 +236,14 @@ export default function ReportFloodModal({ isOpen, onClose, defaultCoords, onRep
               : 'bg-sky-50/80 border-sky-200 text-neutral-900'
           }`}>
             <div className="flex items-center justify-between font-mono">
-              <span className="font-bold flex items-center gap-1.5">
+              <span className="font-bold">
                 AI HINT: {aiSuggestion.suggestedLevel?.toUpperCase()}
               </span>
               <span className="px-2 py-0.5 rounded bg-white font-bold border uppercase text-[10px]">
                 Confidence: {aiSuggestion.confidence}
               </span>
             </div>
-            <p className="leading-relaxed">
-              <strong>Observation:</strong> {aiSuggestion.reasoning}
-            </p>
+            <p className="leading-relaxed">{aiSuggestion.reasoning}</p>
             <div className="pt-1 text-[11px] font-mono border-t border-black/10 font-semibold opacity-80">
               ⚠️ {aiSuggestion.notice}
             </div>
@@ -199,7 +252,7 @@ export default function ReportFloodModal({ isOpen, onClose, defaultCoords, onRep
 
         <div className="space-y-2">
           <label className="block text-xs font-bold text-neutral-700 uppercase tracking-wide">
-            Step 2: Confirm Observed Water Level (Required)
+            Step 2 (required): Tap the water level you see
           </label>
           <div className="grid grid-cols-2 gap-2">
             {LEVEL_OPTIONS.map((opt) => {
@@ -220,15 +273,28 @@ export default function ReportFloodModal({ isOpen, onClose, defaultCoords, onRep
                     {isSelected && <Check className="w-4 h-4" />}
                   </div>
                   <div className="text-[11px] font-mono opacity-80 mt-0.5">{opt.depth}</div>
+                  {aiLevelLabel === opt.id && (
+                    <div className="text-[10px] font-mono mt-1 text-sky-700 font-bold">AI suggested</div>
+                  )}
                 </button>
               );
             })}
           </div>
+          <p className="text-[11px] text-neutral-500 font-mono">
+            Water can hide open drains. This is an estimate, not a guarantee.
+          </p>
         </div>
+
+        {submitError && (
+          <div className="p-3 bg-red-50 border border-red-300 text-red-800 rounded-xl text-xs font-semibold flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-red-600 mt-0.5" />
+            <span>{submitError}</span>
+          </div>
+        )}
 
         <div className="pt-2 flex items-center justify-between border-t">
           <span className="text-[11px] text-neutral-500 font-mono">
-            Valid: Next 45 minutes
+            {userConfirmedLevel ? 'Ready to publish' : 'Pick a level to publish'}
           </span>
           <div className="flex items-center gap-2">
             <button
@@ -239,7 +305,7 @@ export default function ReportFloodModal({ isOpen, onClose, defaultCoords, onRep
             </button>
             <button
               onClick={handleSubmit}
-              disabled={isSubmitting}
+              disabled={isSubmitting || !userConfirmedLevel}
               className="bg-aws-blue hover:bg-aws-blue-dark disabled:bg-neutral-300 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm transition-colors flex items-center gap-1.5"
             >
               {isSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Droplets className="w-3.5 h-3.5" />}

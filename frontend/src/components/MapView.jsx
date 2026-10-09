@@ -1,7 +1,8 @@
 import React, { useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
-import { AlertOctagon, CheckCircle2, Clock, Eye, ShieldAlert, Sparkles } from 'lucide-react';
+import { CheckCircle2 } from 'lucide-react';
+import { APP_CONFIG } from '../config';
 
 // Custom Marker HTML Generators
 function createFloodIcon(pin) {
@@ -14,15 +15,16 @@ function createFloodIcon(pin) {
     ? 'bg-blue-700 text-white'
     : 'bg-sky-500 text-white';
 
+  const isSample = !!pin.isSampleData;
   const html = `
     <div class="relative flex flex-col items-center">
-      <div class="w-8 h-8 rounded-full ${bgClass} flex items-center justify-center shadow-lg border-2 border-white transition-transform hover:scale-110">
+      <div class="w-8 h-8 rounded-full ${bgClass} flex items-center justify-center shadow-lg border-2 ${isSample ? 'border-dashed border-violet-300 opacity-80' : 'border-white'} transition-transform hover:scale-110">
         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 fill-current" viewBox="0 0 24 24">
           <path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>
         </svg>
       </div>
-      <div class="mt-1 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-neutral-900/90 text-white shadow whitespace-nowrap">
-        ${pin.level ? pin.level.toUpperCase() : 'FLOOD'} · ${pin.ageMinutes !== undefined ? pin.ageMinutes + 'm' : 'NEW'}
+      <div class="mt-1 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${isSample ? 'bg-violet-700' : 'bg-neutral-900/90'} text-white shadow whitespace-nowrap">
+        ${isSample ? 'SAMPLE · ' : ''}${pin.level ? pin.level.toUpperCase() : 'FLOOD'} · ${pin.ageMinutes !== undefined ? pin.ageMinutes + 'm' : 'NEW'}
       </div>
     </div>
   `;
@@ -47,17 +49,18 @@ function createHazardIcon(pin) {
     ? 'POTHOLE'
     : 'DRAIN';
 
+  const isSample = !!pin.isSampleData;
   const html = `
     <div class="relative flex flex-col items-center">
-      <div class="w-8 h-8 rounded-md ${bgClass} flex items-center justify-center shadow-md border-2 transition-transform hover:scale-110">
+      <div class="w-8 h-8 rounded-md ${bgClass} flex items-center justify-center shadow-md border-2 ${isSample ? 'border-dashed !border-violet-500 opacity-80' : ''} transition-transform hover:scale-110">
         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/>
           <line x1="12" y1="8" x2="12" y2="12"/>
           <line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
       </div>
-      <div class="mt-1 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${isOld ? 'bg-neutral-600 text-neutral-200' : 'bg-neutral-900/90 text-amber-300'} shadow whitespace-nowrap">
-        ${label} ${isOld ? '(OLD)' : ''}
+      <div class="mt-1 px-1.5 py-0.5 rounded text-[9px] font-mono font-bold ${isSample ? 'bg-violet-700 text-white' : isOld ? 'bg-neutral-600 text-neutral-200' : 'bg-neutral-900/90 text-amber-300'} shadow whitespace-nowrap">
+        ${isSample ? 'SAMPLE · ' : ''}${label} ${isOld ? '(OLD)' : ''}
       </div>
     </div>
   `;
@@ -103,13 +106,13 @@ export default function MapView({
   endPoint,
   onMapClick,
   onSelectHazardPin,
-  mapCenter = [28.7505, 77.1188]
+  mapCenter = APP_CONFIG.DEFAULT_MAP_CENTER
 }) {
   return (
     <div className="relative w-full h-[520px] lg:h-[620px] rounded-xl overflow-hidden border border-wmd-border shadow-sm">
       <MapContainer
         center={mapCenter}
-        zoom={15}
+        zoom={APP_CONFIG.DEFAULT_ZOOM}
         scrollWheelZoom={true}
         className="w-full h-full z-10"
       >
@@ -171,6 +174,11 @@ export default function MapView({
             >
               <Popup>
                 <div className="p-1 space-y-1.5 text-xs">
+                  {pin.isSampleData && (
+                    <div className="bg-violet-100 text-violet-800 border border-violet-300 rounded px-1.5 py-1 text-[10px] font-mono font-bold">
+                      SAMPLE DATA: not a real report
+                    </div>
+                  )}
                   {isFlood ? (
                     <>
                       <div className="flex items-center justify-between gap-2 border-b pb-1 font-mono font-bold">
@@ -194,11 +202,11 @@ export default function MapView({
                       )}
                       {pin.compoundHazardNearby && (
                         <div className="bg-red-50 text-red-700 p-1.5 rounded text-[11px] font-semibold border border-red-200">
-                          ⚠️ Known drain/hazard within 50m!
+                          ⚠️ Known drain/hazard within {APP_CONFIG.COMPOUND_DANGER_RADIUS_METERS}m. Water may be hiding it.
                         </div>
                       )}
                       <p className="text-[10px] text-neutral-400 italic pt-1">
-                        Expires automatically 45 min after report.
+                        Hidden from the map {APP_CONFIG.FLOOD_PIN_LIFETIME_MINUTES} min after the report.
                       </p>
                     </>
                   ) : (
@@ -236,11 +244,10 @@ export default function MapView({
       <div className="absolute bottom-3 left-3 z-20 bg-white/95 backdrop-blur-sm p-2.5 rounded-lg border border-wmd-border shadow-md text-xs font-mono space-y-1.5 max-w-[240px]">
         <div className="font-bold text-neutral-800 text-[11px] border-b pb-1 flex items-center justify-between">
           <span>MAP LAYERS</span>
-          <span className="text-[10px] text-neutral-400 font-normal">Dual-telemetry</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="w-3 h-3 rounded-full bg-sky-500"></span>
-          <span className="text-neutral-700">Flood (Decays 45 min)</span>
+          <span className="text-neutral-700">Flood (hidden after 45 min)</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="w-3 h-3 rounded bg-amber-500"></span>
@@ -249,6 +256,10 @@ export default function MapView({
         <div className="flex items-center gap-2">
           <span className="w-3 h-3 rounded bg-neutral-400"></span>
           <span className="text-neutral-500">Old Hazard (&gt;60 days)</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-3 h-3 rounded border-2 border-dashed border-violet-600 bg-violet-100"></span>
+          <span className="text-violet-700">Sample data (not real)</span>
         </div>
         <div className="flex items-center gap-2">
           <span className="w-3 h-3 rounded-full bg-red-600 animate-pulse"></span>

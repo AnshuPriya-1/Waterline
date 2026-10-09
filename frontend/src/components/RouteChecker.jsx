@@ -1,8 +1,28 @@
 import React, { useState } from 'react';
-import { AlertTriangle, CheckCircle, Navigation, ShieldAlert, Sparkles, X, Loader2 } from 'lucide-react';
+import { AlertTriangle, Info, Navigation, ShieldAlert, Share2, Sparkles, X, Loader2 } from 'lucide-react';
 import { evaluateRoute } from '../utils/routeChecker';
 import { fetchRoadRoute } from '../utils/fetchRoute';
 import { APP_CONFIG } from '../config';
+
+function buildShareText(evalResult, routeStats) {
+  const statusLine = {
+    critical_risk: 'HIGHER RISK: flooding reported near a known open drain / hazard on this route.',
+    moderate_risk: 'MODERATE RISK: known drain / hazard spots near this route.',
+    advisory: 'ADVISORY: waterlogging reported near this route.',
+    lower_risk: 'No reports on this route right now (this does not mean it is clear).'
+  }[evalResult.overallStatus];
+
+  const top = evalResult.warnings.slice(0, 3).map((w) => `- ${w.message}`);
+  const lines = [
+    'WaterLine route check',
+    statusLine,
+    ...top,
+    routeStats ? `Road distance: ${routeStats.distanceKm} km` : null,
+    'Water can hide open drains. This is an estimate, not a guarantee.',
+    typeof window !== 'undefined' ? window.location.origin : ''
+  ].filter(Boolean);
+  return lines.join('\n');
+}
 
 export default function RouteChecker({
   pins,
@@ -64,7 +84,7 @@ export default function RouteChecker({
             <h3 className="font-bold text-neutral-900 text-sm sm:text-base">Check My Route</h3>
           </div>
           <p className="text-[10px] font-mono text-neutral-500 mt-0.5">
-            Real OSRM road geometry · 40m hazard corridor scan
+            Real road path (OSRM, car routes) · {APP_CONFIG.CORRIDOR_THRESHOLD_METERS} m corridor check
           </p>
         </div>
         <button
@@ -152,7 +172,7 @@ export default function RouteChecker({
       {routeStats && !routeError && (
         <div className="text-[11px] font-mono text-neutral-500 flex items-center justify-between px-1">
           <span>Road Distance: {routeStats.distanceKm} km</span>
-          <span>Approx Drive: ~{routeStats.durationMins} min</span>
+          <span>Approx car time: ~{routeStats.durationMins} min</span>
         </div>
       )}
 
@@ -165,8 +185,8 @@ export default function RouteChecker({
                 <span>HIGHER RISK: Submerged Hazard on Route</span>
               </div>
               <p className="text-xs text-red-800 leading-relaxed font-sans">
-                Waterlogging was reported within 50m of a known open drain or missing cover along this road corridor. 
-                Water may be hiding deep drops. Avoid this street.
+                Flooding was reported close to a known open drain or missing cover along this road. 
+                Water may be hiding a deep drop. Avoid this street if you can.
               </p>
             </div>
           ) : evalResult.overallStatus === 'moderate_risk' ? (
@@ -176,7 +196,7 @@ export default function RouteChecker({
                 <span>MODERATE RISK: Street Hazards Near Road Path</span>
               </div>
               <p className="text-xs text-amber-900 leading-relaxed">
-                Known drain or pothole spots are within 40m of this road. Proceed with caution.
+                Known drain or pothole spots are close to this road. Go slowly or choose another street.
               </p>
             </div>
           ) : evalResult.overallStatus === 'advisory' ? (
@@ -190,13 +210,14 @@ export default function RouteChecker({
               </p>
             </div>
           ) : (
-            <div className="bg-emerald-50 border border-emerald-300 rounded-xl p-3 text-emerald-950 space-y-1">
-              <div className="flex items-center gap-2 font-bold text-sm text-emerald-800">
-                <CheckCircle className="w-4 h-4 shrink-0 text-emerald-600" />
-                <span>LOWER RISK: No Active Hazards Flagged</span>
+            <div className="bg-neutral-50 border border-neutral-300 rounded-xl p-3 text-neutral-900 space-y-1">
+              <div className="flex items-center gap-2 font-bold text-sm text-neutral-800">
+                <Info className="w-4 h-4 shrink-0 text-neutral-600" />
+                <span>NO REPORTS ON THIS ROUTE</span>
               </div>
-              <p className="text-xs text-emerald-900 leading-relaxed">
-                No active flood pins or known drains mapped along this exact road corridor in the past 45 minutes.
+              <p className="text-xs text-neutral-700 leading-relaxed">
+                Nobody has reported a flood or a known hazard along this road. That only means nothing is
+                on the map, not that the road is clear. Unmapped drains and potholes can still be there.
               </p>
             </div>
           )}
@@ -228,6 +249,16 @@ export default function RouteChecker({
               ))}
             </div>
           )}
+
+          <a
+            href={`https://wa.me/?text=${encodeURIComponent(buildShareText(evalResult, routeStats))}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 font-semibold py-2 px-3 rounded-lg text-xs flex items-center justify-center gap-2 transition-colors"
+          >
+            <Share2 className="w-4 h-4" />
+            <span>Share this route check on WhatsApp</span>
+          </a>
 
           <div className="bg-neutral-100 p-2.5 rounded-lg border border-neutral-200 text-[11px] text-neutral-600 font-mono space-y-0.5">
             <div className="font-bold text-neutral-800">MANDATORY NOTICE:</div>

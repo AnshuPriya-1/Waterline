@@ -49,7 +49,7 @@ export default function FooterSafety() {
 
       {/* Copyright */}
       <div className="border-t border-neutral-100 py-3 text-center text-[10px] text-neutral-400 font-mono">
-        © 2026 WaterLine · Bharat Builds Environmental Hacks · Delhi Technological University (DTU)
+        © 2026 WaterLine · Bharat Builds Environmental Hacks
       </div>
     </footer>
   );
