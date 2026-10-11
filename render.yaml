@@ -15,15 +15,19 @@ services:
   - type: web
     name: waterline-frontend
     runtime: static
-    rootDir: frontend
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --include=dev && npm run build
     staticPublishPath: dist
     envVars:
       - key: NODE_VERSION
         value: 22
+      - key: VITE_API_BASE_URL
+        value: https://waterline-backend.onrender.com
     routes:
       - type: rewrite
         source: /*
         destination: /index.html
+
+
+
 
 
