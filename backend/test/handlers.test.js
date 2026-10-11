@@ -7,14 +7,18 @@ import { test, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { installFakeAws, fake, resetFake, putFake } from "../utils/fakeDynamo.js";
 
-let createReport, getPins, votePin;
+let createReport, getPins, votePin, escalateRoute, getEscalations, analyzeHazard;
 
 before(async () => {
   installFakeAws();
   process.env.CRITICAL_ALERT_SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:123456789012:test";
+  process.env.GOV_SNS_TOPIC_ARN = "arn:aws:sns:us-east-1:123456789012:test-gov";
   ({ handler: createReport } = await import("../handlers/createReport.js"));
   ({ handler: getPins } = await import("../handlers/getPins.js"));
   ({ handler: votePin } = await import("../handlers/votePin.js"));
+  ({ handler: escalateRoute } = await import("../handlers/escalateRoute.js"));
+  ({ handler: getEscalations } = await import("../handlers/getEscalations.js"));
+  ({ handler: analyzeHazard } = await import("../handlers/analyzeHazard.js"));
 });
 
 beforeEach(() => {
@@ -110,4 +114,96 @@ test("voting: needs a device id, one vote per device, 2 fixed votes retire the h
 
   const pins = parse(await getPins({ queryStringParameters: { city: "testcity" } })).pins;
   assert.equal(pins.filter((p) => p.type === "hazard").length, 0);
+});
+
+// ------------------------------------------------------------- NEW FEATURE TESTS
+test("escalateRoute creates an official government ticket and sends SNS alert", async () => {
+  const res = await post(escalateRoute, {
+    city: "testcity",
+    routeName: "Outer Ring Road (North Stretch)",
+    potholeCount: 4,
+    potholeCoordinates: [
+      { lat: 25.801, lng: 85.802, hazardType: "deep_pothole" },
+      { lat: 25.803, lng: 85.804, hazardType: "deep_pothole" }
+    ],
+    citizenNotes: "Deep craters causing severe congestion and two-wheeler skids",
+    deviceId: "dev-commuter-1"
+  });
+
+  assert.equal(res.statusCode, 201);
+  const data = parse(res);
+  assert.equal(data.success, true);
+  assert.ok(data.ticketId.startsWith("PWD-TES-"));
+  assert.equal(data.escalation.potholeCount, 4);
+  assert.equal(data.escalation.status, "escalated_to_pwd");
+  assert.ok(fake.snsMessages.some((m) => m.Subject.includes("Outer Ring Road")));
+});
+
+test("escalating an already-reported route increments complaint tally", async () => {
+  await post(escalateRoute, {
+    city: "testcity",
+    routeName: "MG Road Sector 4",
+    potholeCount: 3,
+    deviceId: "dev-user-1"
+  });
+
+  const secondReport = await post(escalateRoute, {
+    city: "testcity",
+    routeName: "MG Road Sector 4",
+    potholeCount: 5,
+    deviceId: "dev-user-2"
+  });
+
+  assert.equal(secondReport.statusCode, 200);
+  const data = parse(secondReport);
+  assert.equal(data.alreadyActive, true);
+  assert.equal(data.complaintCount, 2);
+  assert.equal(data.potholeCount, 5);
+});
+
+test("citizens can upvote an existing route grievance ticket", async () => {
+  const initial = parse(await post(escalateRoute, {
+    city: "testcity",
+    routeName: "NH-44 Bypass",
+    potholeCount: 2,
+    deviceId: "dev-init"
+  }));
+
+  const upvote1 = await post(escalateRoute, {
+    city: "testcity",
+    action: "upvote",
+    ticketId: initial.ticketId,
+    deviceId: "dev-support-1"
+  });
+  assert.equal(upvote1.statusCode, 200);
+  assert.equal(parse(upvote1).complaintCount, 2);
+
+  // Duplicate upvote by same device rejected
+  const dupUpvote = await post(escalateRoute, {
+    city: "testcity",
+    action: "upvote",
+    ticketId: initial.ticketId,
+    deviceId: "dev-support-1"
+  });
+  assert.equal(dupUpvote.statusCode, 409);
+});
+
+test("getEscalations lists active municipal tickets for city", async () => {
+  await post(escalateRoute, { city: "testcity", routeName: "Route A", potholeCount: 2, deviceId: "d1" });
+  await post(escalateRoute, { city: "testcity", routeName: "Route B", potholeCount: 4, deviceId: "d2" });
+
+  const res = await getEscalations({ queryStringParameters: { city: "testcity" } });
+  assert.equal(res.statusCode, 200);
+  const data = parse(res);
+  assert.ok(Array.isArray(data.escalations));
+  assert.equal(data.escalations.length, 2);
+});
+
+test("analyzeHazard returns safe fallback when Bedrock is offline", async () => {
+  const res = await post(analyzeHazard, { base64Image: "fakebase64string12345" });
+  assert.equal(res.statusCode, 200);
+  const data = parse(res);
+  assert.ok(data.detectedHazard);
+  assert.ok(data.severity);
+  assert.equal(data.fallback, true);
 });

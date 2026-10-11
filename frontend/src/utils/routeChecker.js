@@ -1,5 +1,5 @@
 /**
- * Route Corridor Hazard Analysis & Proximity Evaluator
+ * Route Corridor Hazard Analysis, Proximity Evaluator & Civic Cluster Detector
  */
 
 export function haversineDistanceMeters(lat1, lon1, lat2, lon2) {
@@ -43,16 +43,23 @@ export function pointToSegmentDistanceMeters(p, a, b) {
 
 /**
  * Checks a route path against active flood pins and hazards.
- * Prioritizes the compound threat (waterlogging over/near an open drain).
+ * Flags compound threats, individual hazards, and aggregates pothole clusters
+ * for automated citizen grievance escalation to municipal authorities/PWD.
  */
-export function evaluateRoute(routeWaypoints, activePins, corridorThresholdMeters = 40) {
+export function evaluateRoute(routeWaypoints, activePins, corridorThresholdMeters = 40, potholeEscalateThreshold = 2) {
   if (!routeWaypoints || routeWaypoints.length < 2) {
-    return { warnings: [], overallStatus: "clear" };
+    return {
+      warnings: [],
+      overallStatus: "clear",
+      safetyScore: 100,
+      safetyRating: "EXCELLENT",
+      potholeCluster: { detected: false, count: 0, points: [], canEscalate: false }
+    };
   }
 
   const rawWarnings = [];
-  const floodPins = activePins.filter((p) => p.type === "flood");
-  const hazardPins = activePins.filter((p) => p.type === "hazard");
+  const floodPins = (activePins || []).filter((p) => p.type === "flood");
+  const hazardPins = (activePins || []).filter((p) => p.type === "hazard");
 
   // Step 1: Detect Compound Risks (Flood pin within 50m of known dry-day drain/hazard)
   const compoundRisks = [];
@@ -65,7 +72,9 @@ export function evaluateRoute(routeWaypoints, activePins, corridorThresholdMeter
     }
   }
 
-  // Step 2: Test Route Segments
+  const detectedPotholesMap = new Map();
+
+  // Step 2: Test Route Segments against hazards and floods
   for (let i = 0; i < routeWaypoints.length - 1; i++) {
     const segA = routeWaypoints[i];
     const segB = routeWaypoints[i + 1];
@@ -110,6 +119,20 @@ export function evaluateRoute(routeWaypoints, activePins, corridorThresholdMeter
           distanceToRoute: Math.round(distToSegment),
           hazardType: hazard.hazardType
         });
+
+        // Track potholes specifically for government escalation clustering
+        if (hazard.hazardType === "deep_pothole" || hazard.hazardType === "missing_manhole") {
+          const pKey = `${hazard.lat.toFixed(5)}-${hazard.lng.toFixed(5)}`;
+          if (!detectedPotholesMap.has(pKey)) {
+            detectedPotholesMap.set(pKey, {
+              lat: hazard.lat,
+              lng: hazard.lng,
+              hazardType: hazard.hazardType,
+              distanceToRoute: Math.round(distToSegment),
+              description: hazard.description || ""
+            });
+          }
+        }
       }
     }
 
@@ -158,13 +181,49 @@ export function evaluateRoute(routeWaypoints, activePins, corridorThresholdMeter
     overallStatus = "advisory";
   }
 
+  // Pothole cluster metrics
+  const detectedPotholesList = Array.from(detectedPotholesMap.values());
+  const potholeCount = detectedPotholesList.length;
+  const canEscalate = potholeCount >= potholeEscalateThreshold;
+
+  // Compute Intelligent Route Safety Score (0-100)
+  let calculatedScore = 100;
+  const criticalCount = finalWarnings.filter((w) => w.level === "CRITICAL").length;
+  const cautionCount = finalWarnings.filter((w) => w.level === "CAUTION").length;
+  const advisoryCount = finalWarnings.filter((w) => w.level === "ADVISORY").length;
+
+  calculatedScore -= criticalCount * 30;
+  calculatedScore -= cautionCount * 15;
+  calculatedScore -= advisoryCount * 8;
+  const safetyScore = Math.max(0, Math.min(100, calculatedScore));
+
+  let safetyRating = "EXCELLENT";
+  if (safetyScore < 45) {
+    safetyRating = "CRITICAL RISK";
+  } else if (safetyScore < 70) {
+    safetyRating = "POOR (HIGH HAZARD DENSITY)";
+  } else if (safetyScore < 90) {
+    safetyRating = "MODERATE CAUTION";
+  }
+
   return {
     warnings: finalWarnings,
     overallStatus,
+    safetyScore,
+    safetyRating,
+    potholeCluster: {
+      detected: potholeCount > 0,
+      count: potholeCount,
+      points: detectedPotholesList,
+      canEscalate,
+      severityRating: potholeCount >= 4 ? "EMERGENCY CLUSTER" : potholeCount >= 2 ? "HIGH CLUSTER" : "SCATTERED DEFECT",
+      recommendedDepartment: "Public Works Department (PWD) / Municipal Road Cell"
+    },
     summary: {
-      criticalCount: finalWarnings.filter((w) => w.level === "CRITICAL").length,
-      cautionCount: finalWarnings.filter((w) => w.level === "CAUTION").length,
-      advisoryCount: finalWarnings.filter((w) => w.level === "ADVISORY").length
+      criticalCount,
+      cautionCount,
+      advisoryCount,
+      potholeCount
     }
   };
 }

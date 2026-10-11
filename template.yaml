@@ -1,19 +1,26 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  WaterLine - Hyperlocal Urban Flood and Drain Hazard Telemetry
-  WeMakeDevs Bharat Builds Tour | Track 02: Heat and Water
+  WaterLine - Hyperlocal Urban Road Hazard, Flood & Civic Escalation Telemetry
+  Comprehensive AWS Multi-Service Architecture (API Gateway, Lambda, DynamoDB, Bedrock, SNS, SES, S3, EventBridge, CloudWatch)
 
 Parameters:
   AlertEmail:
     Type: String
-    Description: Your REAL email. AWS sends a confirmation link to it; click it or no alert emails will arrive.
+    Description: Real email address for Commuter Critical Hazards (confirm the AWS SNS link sent to this email).
+  GovEmail:
+    Type: String
+    Default: ''
+    Description: (Optional) PWD / Municipal Authority email for Road Defect & Pothole Cluster Escalations. Defaults to AlertEmail if left blank.
   BedrockModelId:
     Type: String
     Default: 'anthropic.claude-3-haiku-20240307-v1:0'
     Description: >
-      Vision model ID (or inference profile ID) that YOUR account can call in this region.
-      Check the Bedrock console. If Bedrock is blocked, the app still works: the AI hint just returns 'unknown'.
+      Vision model ID (or inference profile ID) for Bedrock multimodal depth & pothole defect analysis.
+      If Bedrock is unavailable, fallback analysis is automatically engaged.
+
+Conditions:
+  HasGovEmail: !Not [!Equals [!Ref GovEmail, '']]
 
 Globals:
   Function:
@@ -24,10 +31,14 @@ Globals:
       Variables:
         TABLE_NAME: !Ref ReportsTable
         CRITICAL_ALERT_SNS_TOPIC_ARN: !Ref CriticalAlertsTopic
+        GOV_SNS_TOPIC_ARN: !Ref GovernmentEscalationsTopic
         BEDROCK_MODEL_ID: !Ref BedrockModelId
+        EVIDENCE_BUCKET_NAME: !Ref EvidenceBucket
 
 Resources:
-  # HTTP API with Throttling to protect AWS credits
+  # =========================================================================
+  # 1. AMAZON API GATEWAY (HTTP API v2)
+  # =========================================================================
   WaterLineApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -42,10 +53,12 @@ Resources:
           - Content-Type
           - Authorization
       DefaultRouteSettings:
-        ThrottlingBurstLimit: 20
-        ThrottlingRateLimit: 10
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 25
 
-  # Single table. TTL is only background cleanup (it deletes late); the 45-minute rule is enforced in getPins.
+  # =========================================================================
+  # 2. AMAZON DYNAMODB (Single-Table Design with TTL & GSI)
+  # =========================================================================
   ReportsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -55,29 +68,79 @@ Resources:
           AttributeType: S
         - AttributeName: SK
           AttributeType: S
+        - AttributeName: type
+          AttributeType: S
+        - AttributeName: lastUpdatedAt
+          AttributeType: N
       KeySchema:
         - AttributeName: PK
           KeyType: HASH
         - AttributeName: SK
           KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: TypeUpdatedIndex
+          KeySchema:
+            - AttributeName: type
+              KeyType: HASH
+            - AttributeName: lastUpdatedAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
 
-  # SNS Topic for critical compound hazard notifications
+  # =========================================================================
+  # 3. AMAZON S3 (Civic Evidence Storage & Municipal Audit Dossiers)
+  # =========================================================================
+  EvidenceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'waterline-evidence-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, HEAD]
+            AllowedOrigins: ['*']
+            MaxAge: 3600
+
+  # =========================================================================
+  # 4. AMAZON SNS TOPICS & SUBSCRIPTIONS
+  # =========================================================================
   CriticalAlertsTopic:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: waterline-critical-compound-alerts
+      TopicName: waterline-critical-hazard-alerts
 
-  EmailAlertSubscription:
+  CriticalAlertSubscription:
     Type: AWS::SNS::Subscription
     Properties:
       TopicArn: !Ref CriticalAlertsTopic
       Protocol: email
       Endpoint: !Ref AlertEmail
 
-  # Lambda 1: Analyze street flood depth from image (Bedrock Vision)
+  GovernmentEscalationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: waterline-government-pwd-escalations
+
+  GovAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref GovernmentEscalationsTopic
+      Protocol: email
+      Endpoint: !If [HasGovEmail, !Ref GovEmail, !Ref AlertEmail]
+
+  # =========================================================================
+  # 5. AWS LAMBDA SERVERLESS FUNCTIONS
+  # =========================================================================
+
+  # Lambda 1: Flood Depth Estimator (Bedrock Multimodal Vision)
   AnalyzeFloodFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -97,7 +160,27 @@ Resources:
             Method: post
             ApiId: !Ref WaterLineApi
 
-  # Lambda 2: Ingest report, confirm 2-report agreement & compound risk detection
+  # Lambda 2: Pothole & Road Defect Severity Analyzer (Bedrock Multimodal Vision)
+  AnalyzeHazardFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: handlers/analyzeHazard.handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: '*'
+      Events:
+        AnalyzeHazardApi:
+          Type: HttpApi
+          Properties:
+            Path: /analyze-hazard
+            Method: post
+            ApiId: !Ref WaterLineApi
+
+  # Lambda 3: Report Ingestion & Proximity Correlation
   CreateReportFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -116,7 +199,7 @@ Resources:
             Method: post
             ApiId: !Ref WaterLineApi
 
-  # Lambda 3: Fetch active pins with strict 45-min cutoff in code
+  # Lambda 4: Query Active Pins (Strict 45-Min Flood TTL Enforcement)
   GetPinsFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -133,7 +216,7 @@ Resources:
             Method: get
             ApiId: !Ref WaterLineApi
 
-  # Lambda 4: Vote on hazard pins (still there vs fixed)
+  # Lambda 5: Crowd Hazard Verification & Fixed Voting
   VotePinFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -150,13 +233,75 @@ Resources:
             Method: post
             ApiId: !Ref WaterLineApi
 
+  # Lambda 6: Route Pothole Cluster Aggregator & Government PWD Escalation
+  EscalateRouteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: handlers/escalateRoute.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ReportsTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt GovernmentEscalationsTopic.TopicName
+        - S3CrudPolicy:
+            BucketName: !Sub 'waterline-evidence-${AWS::AccountId}-${AWS::Region}'
+      Events:
+        EscalateRouteApi:
+          Type: HttpApi
+          Properties:
+            Path: /routes/escalate
+            Method: post
+            ApiId: !Ref WaterLineApi
+
+  # Lambda 7: Query Active Municipal Grievance Tickets
+  GetEscalationsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: handlers/getEscalations.handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ReportsTable
+      Events:
+        GetEscalationsApi:
+          Type: HttpApi
+          Properties:
+            Path: /routes/escalations
+            Method: get
+            ApiId: !Ref WaterLineApi
+
+  # Lambda 8: EventBridge Scheduled Periodic Corridor Hazard Audit
+  RouteAuditScheduledFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: handlers/routeAuditScheduled.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ReportsTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt GovernmentEscalationsTopic.TopicName
+      Events:
+        HourlyCorridorAuditSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(2 hours)
+            Description: Periodic automated road defect cluster scan and municipal grievance dispatch
+
 Outputs:
   HttpApiUrl:
-    Description: URL of the WaterLine HTTP API Gateway
+    Description: Base URL for WaterLine HTTP API Gateway
     Value: !Sub 'https://${WaterLineApi}.execute-api.${AWS::Region}.amazonaws.com'
   DynamoDBTableName:
-    Description: DynamoDB Reports Table
+    Description: DynamoDB Reports & Escalations Table Name
     Value: !Ref ReportsTable
-  SnsTopicArn:
-    Description: SNS Alert Topic ARN
+  EvidenceBucketName:
+    Description: S3 Evidence & Civic Audit Dossiers Bucket
+    Value: !Ref EvidenceBucket
+  CriticalAlertsTopicArn:
+    Description: SNS Topic ARN for Critical Hazard Alerts
     Value: !Ref CriticalAlertsTopic
+  GovernmentEscalationsTopicArn:
+    Description: SNS Topic ARN for PWD & Municipal Road Escalations
+    Value: !Ref GovernmentEscalationsTopic

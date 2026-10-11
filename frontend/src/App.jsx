@@ -6,14 +6,27 @@ import RouteChecker from './components/RouteChecker';
 import ReportFloodModal from './components/ReportFloodModal';
 import ReportHazardModal from './components/ReportHazardModal';
 import HazardDetailModal from './components/HazardDetailModal';
+import CivicEscalationsModal from './components/CivicEscalationsModal';
 import FooterSafety from './components/FooterSafety';
 import { api } from './utils/api';
 import { APP_CONFIG } from './config';
 import { fetchRoadRoute } from './utils/fetchRoute';
-import { Droplets, Layers, MapPin, RefreshCw, ShieldAlert, WifiOff, AlertTriangle, CheckCircle2, X } from 'lucide-react';
+import {
+  Droplets,
+  Layers,
+  MapPin,
+  RefreshCw,
+  ShieldAlert,
+  WifiOff,
+  AlertTriangle,
+  CheckCircle2,
+  X,
+  Landmark
+} from 'lucide-react';
 
 export default function App() {
   const [pins, setPins] = useState([]);
+  const [escalations, setEscalations] = useState([]);
   const [isLoadingPins, setIsLoadingPins] = useState(true);
   const [connection, setConnection] = useState(api.getConnectionState());
   const [startPoint, setStartPoint] = useState(null);
@@ -24,6 +37,7 @@ export default function App() {
 
   const [isFloodModalOpen, setIsFloodModalOpen] = useState(false);
   const [isHazardModalOpen, setIsHazardModalOpen] = useState(false);
+  const [isCivicModalOpen, setIsCivicModalOpen] = useState(false);
   const [selectedHazard, setSelectedHazard] = useState(null);
   const [clickCoord, setClickCoord] = useState({
     lat: APP_CONFIG.DEFAULT_MAP_CENTER[0],
@@ -49,10 +63,23 @@ export default function App() {
     }
   };
 
+  const loadEscalations = async () => {
+    try {
+      const data = await api.getEscalations(APP_CONFIG.DEFAULT_CITY);
+      setEscalations(data);
+    } catch (err) {
+      console.error('Failed to load escalations:', err);
+    }
+  };
+
   useEffect(() => {
     loadPins();
+    loadEscalations();
     // Refresh every minute so old flood pins drop off the map
-    const interval = setInterval(loadPins, 60000);
+    const interval = setInterval(() => {
+      loadPins();
+      loadEscalations();
+    }, 60000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -93,13 +120,14 @@ export default function App() {
   const handleResetData = () => {
     const fresh = api.resetSampleData();
     setPins(fresh);
+    loadEscalations();
     handleClearRoute();
   };
 
   const floodCount = pins.filter((p) => p.type === 'flood').length;
   const hazardCount = pins.filter((p) => p.type === 'hazard').length;
-  const sampleCount = pins.filter((p) => p.isSampleData).length;
-  const realCount = pins.length - sampleCount;
+  const potholeCount = pins.filter((p) => p.type === 'hazard' && p.hazardType === 'deep_pothole').length;
+  const activeEscalationsCount = escalations.length;
 
   const showOfflineBanner = !isLoadingPins && connection === 'not_configured';
   const showUnreachableBanner = !isLoadingPins && connection === 'unreachable';
@@ -110,8 +138,7 @@ export default function App() {
         <div className="bg-amber-400 text-neutral-950 font-mono text-xs px-4 py-2 font-bold text-center border-b border-amber-500 flex items-center justify-center gap-2">
           <WifiOff className="w-4 h-4 shrink-0" />
           <span>
-            OFFLINE DEMO MODE: no backend is connected. Data stays only in this browser. There is no AI hint and
-            other people cannot see your reports.
+            OFFLINE DEMO MODE: Local browser execution. Serverless AWS API Gateway &amp; DynamoDB endpoints ready for cloud deployment.
           </span>
         </div>
       )}
@@ -119,7 +146,7 @@ export default function App() {
         <div className="bg-red-600 text-white font-mono text-xs px-4 py-2 font-bold text-center border-b border-red-700 flex items-center justify-center gap-2">
           <WifiOff className="w-4 h-4 shrink-0" />
           <span>
-            CANNOT REACH THE SERVER: the map may be out of date, and new reports will NOT be saved until it is back.
+            CANNOT REACH SERVER: Showing cached civic telemetry. Connect to AWS API Gateway endpoint to sync live records.
           </span>
         </div>
       )}
@@ -149,15 +176,18 @@ export default function App() {
       <Navbar
         onOpenReportFlood={() => setIsFloodModalOpen(true)}
         onOpenReportHazard={() => setIsHazardModalOpen(true)}
+        onOpenCivicEscalations={() => setIsCivicModalOpen(true)}
         onResetData={handleResetData}
         showReset={connection === 'not_configured'}
+        activeEscalationsCount={activeEscalationsCount}
       />
 
       <DisclaimerBanner />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* Metric Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
-          <div className="bg-white p-3 rounded-xl border border-wmd-border shadow-sm flex items-center justify-between">
+          <div className="bg-white p-3 rounded-xl border border-wmd-border shadow-xs flex items-center justify-between">
             <div>
               <span className="text-neutral-500 uppercase text-[10px]">Active Floods</span>
               <div className="text-base font-bold text-sky-700">{floodCount} spots</div>
@@ -167,36 +197,46 @@ export default function App() {
             </div>
           </div>
 
-          <div className="bg-white p-3 rounded-xl border border-wmd-border shadow-sm flex items-center justify-between">
+          <div className="bg-white p-3 rounded-xl border border-wmd-border shadow-xs flex items-center justify-between">
             <div>
-              <span className="text-neutral-500 uppercase text-[10px]">Known Hazards</span>
-              <div className="text-base font-bold text-amber-700">{hazardCount} spots</div>
+              <span className="text-neutral-500 uppercase text-[10px]">Potholes Flagged</span>
+              <div className="text-base font-bold text-rose-700">{potholeCount} spots</div>
             </div>
-            <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center">
               <ShieldAlert className="w-4 h-4" />
             </div>
           </div>
 
-          <div className="bg-white p-3 rounded-xl border border-wmd-border shadow-sm flex items-center justify-between">
+          <div
+            onClick={() => setIsCivicModalOpen(true)}
+            className="bg-white p-3 rounded-xl border border-indigo-200 hover:border-indigo-400 shadow-xs flex items-center justify-between cursor-pointer transition-colors"
+            title="Click to view PWD Grievances"
+          >
             <div>
-              <span className="text-neutral-500 uppercase text-[10px]">Data</span>
-              <div className="text-xs font-bold text-neutral-800">
-                {realCount} Real · {sampleCount} Sample
+              <span className="text-indigo-600 uppercase text-[10px] font-bold">PWD Govt Tickets</span>
+              <div className="text-base font-bold text-indigo-950 flex items-center gap-1.5">
+                <span>{activeEscalationsCount} Active</span>
+                <span className="text-[10px] font-normal text-indigo-600 underline">View →</span>
               </div>
             </div>
-            <div className="w-8 h-8 rounded-lg bg-neutral-100 text-neutral-700 flex items-center justify-center">
-              <Layers className="w-4 h-4" />
+            <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center">
+              <Landmark className="w-4 h-4" />
             </div>
           </div>
 
-          <div className="bg-white p-3 rounded-xl border border-wmd-border shadow-sm flex items-center justify-between">
+          <div className="bg-white p-3 rounded-xl border border-wmd-border shadow-xs flex items-center justify-between">
             <div>
-              <span className="text-neutral-500 uppercase text-[10px]">Flood pins last</span>
-              <div className="text-base font-bold text-emerald-700">{APP_CONFIG.FLOOD_PIN_LIFETIME_MINUTES} min</div>
+              <span className="text-neutral-500 uppercase text-[10px]">Telemetry Sync</span>
+              <div className="text-xs font-bold text-neutral-800">
+                {hazardCount} Total Hazards
+              </div>
             </div>
             <button
-              onClick={loadPins}
-              title="Refresh pins"
+              onClick={() => {
+                loadPins();
+                loadEscalations();
+              }}
+              title="Refresh telemetry"
               className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 flex items-center justify-center transition-colors"
             >
               <RefreshCw className={`w-4 h-4 ${isLoadingPins ? 'animate-spin' : ''}`} />
@@ -204,6 +244,7 @@ export default function App() {
           </div>
         </div>
 
+        {/* Map & Route Checker */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           <div className="lg:col-span-7 space-y-3">
             <div className="flex items-center justify-between text-xs">
@@ -238,6 +279,13 @@ export default function App() {
               onLoadPresetRoute={handleLoadPresetRoute}
               routeCoordinates={routeCoordinates}
               setRouteCoordinates={setRouteCoordinates}
+              onEscalationCreated={(esc) => {
+                loadEscalations();
+                showToast(
+                  'success',
+                  `Corridor escalated to PWD! Official Ticket ID: ${esc.ticketId}. Dispatched via AWS SNS.`
+                );
+              }}
             />
           </div>
         </div>
@@ -281,6 +329,13 @@ export default function App() {
         hazard={selectedHazard}
         onClose={() => setSelectedHazard(null)}
         onVoteCast={loadPins}
+      />
+
+      <CivicEscalationsModal
+        isOpen={isCivicModalOpen}
+        onClose={() => setIsCivicModalOpen(false)}
+        city={APP_CONFIG.DEFAULT_CITY}
+        onTicketUpdated={loadEscalations}
       />
 
       <FooterSafety />

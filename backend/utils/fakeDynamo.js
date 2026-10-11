@@ -25,8 +25,13 @@ function send(command) {
   const input = command.input;
 
   if (name === "QueryCommand") {
-    const pk = input.ExpressionAttributeValues[":pk"];
-    return { Items: [...fake.table.values()].filter((i) => i.PK === pk).map((i) => ({ ...i })) };
+    const pk = input.ExpressionAttributeValues?.[":pk"];
+    const skPrefix = input.ExpressionAttributeValues?.[":skPrefix"];
+    let items = [...fake.table.values()].filter((i) => i.PK === pk);
+    if (skPrefix) {
+      items = items.filter((i) => i.SK && i.SK.startsWith(skPrefix));
+    }
+    return { Items: items.map((i) => ({ ...i })) };
   }
   if (name === "PutCommand") {
     putFake(input.Item);
@@ -44,7 +49,8 @@ function send(command) {
     const setPart = input.UpdateExpression.replace(/^SET\s+/, "");
     for (const assignment of setPart.split(",")) {
       const [left, right] = assignment.split("=").map((x) => x.trim());
-      item[names[left] || left] = values[right];
+      const field = names[left] || left;
+      item[field] = values[right];
     }
     return {};
   }
@@ -57,7 +63,7 @@ export function installFakeAws() {
   };
   SNSClient.prototype.send = async function (command) {
     fake.snsMessages.push(command.input);
-    console.log("[fake SNS] alert would be emailed:", command.input.Subject);
+    console.log("[fake SNS] alert would be dispatched:", command.input.Subject);
     return {};
   };
 }

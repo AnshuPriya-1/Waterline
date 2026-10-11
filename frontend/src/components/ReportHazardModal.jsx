@@ -1,17 +1,28 @@
-import React, { useState, useEffect } from 'react';
-import { AlertCircle, AlertOctagon, Loader2, MapPin, ShieldAlert, X } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  AlertCircle,
+  AlertOctagon,
+  Loader2,
+  MapPin,
+  ShieldAlert,
+  X,
+  Camera,
+  Sparkles,
+  CheckCircle2
+} from 'lucide-react';
 import { api } from '../utils/api';
 import { APP_CONFIG } from '../config';
 import { getCurrentPosition } from '../utils/location';
+import { resizeImage } from '../utils/imageResizer';
 
 const HAZARD_TYPES = [
   { id: 'open_drain', label: 'Open Roadside Drain', desc: 'Uncovered concrete storm drain or trench' },
   { id: 'missing_manhole', label: 'Missing Manhole Cover', desc: 'Broken or removed circular sewer lid' },
-  { id: 'deep_pothole', label: 'Deep Pothole', desc: 'Dangerous road dip, more than 6 inches deep' }
+  { id: 'deep_pothole', label: 'Deep Pothole', desc: 'Dangerous road crater, more than 6 inches deep' }
 ];
 
 export default function ReportHazardModal({ isOpen, onClose, defaultCoords, onHazardCreated }) {
-  const [hazardType, setHazardType] = useState('open_drain');
+  const [hazardType, setHazardType] = useState('deep_pothole');
   const [description, setDescription] = useState('');
   const [coords, setCoords] = useState(defaultCoords);
   const [accuracy, setAccuracy] = useState(null);
@@ -20,15 +31,22 @@ export default function ReportHazardModal({ isOpen, onClose, defaultCoords, onHa
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
 
-  // Reset the form and take the latest map tap every time the modal opens
+  // Multimodal AI photo analysis
+  const [imagePreview, setImagePreview] = useState(null);
+  const [isAnalyzingPhoto, setIsAnalyzingPhoto] = useState(false);
+  const [aiAnalysis, setAiAnalysis] = useState(null);
+  const fileInputRef = useRef(null);
+
   useEffect(() => {
     if (isOpen) {
       setCoords(defaultCoords);
       setAccuracy(null);
-      setHazardType('open_drain');
+      setHazardType('deep_pothole');
       setDescription('');
       setLocatingError(null);
       setSubmitError(null);
+      setImagePreview(null);
+      setAiAnalysis(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
@@ -46,6 +64,33 @@ export default function ReportHazardModal({ isOpen, onClose, defaultCoords, onHa
       setLocatingError(err.message);
     } finally {
       setIsLocating(false);
+    }
+  };
+
+  const handleImageSelected = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      setIsAnalyzingPhoto(true);
+      const resized = await resizeImage(file, 1000, 0.75);
+      setImagePreview(resized.previewUrl);
+
+      const result = await api.analyzeHazardPhoto(resized.base64);
+      setAiAnalysis(result);
+
+      if (result.detectedHazard && ['open_drain', 'missing_manhole', 'deep_pothole'].includes(result.detectedHazard)) {
+        setHazardType(result.detectedHazard);
+      }
+      if (result.reasoning) {
+        setDescription(
+          `AI Analysis: ${result.reasoning} (${result.estimatedDimensions || 'Crater defect'}). ${result.pwdRecommendation || ''}`.slice(0, 300)
+        );
+      }
+    } catch (err) {
+      console.warn("Photo analysis error:", err);
+    } finally {
+      setIsAnalyzingPhoto(false);
     }
   };
 
@@ -72,16 +117,18 @@ export default function ReportHazardModal({ isOpen, onClose, defaultCoords, onHa
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-      <div className="bg-white rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-wmd-border space-y-4">
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-white rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-wmd-border space-y-4 max-h-[92vh] overflow-y-auto">
         <div className="flex items-center justify-between border-b pb-3">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-amber-500 text-white flex items-center justify-center">
-              <ShieldAlert className="w-4 h-4" />
+            <div className="w-8 h-8 rounded-lg bg-amber-500 text-white flex items-center justify-center">
+              <ShieldAlert className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-bold text-neutral-900 text-base">Report a Dry-Day Hazard</h3>
-              <p className="text-[11px] font-mono text-neutral-500">Stays on the map until 2 devices mark it fixed</p>
+              <h3 className="font-bold text-neutral-900 text-base">Report Road Hazard / Pothole</h3>
+              <p className="text-[11px] font-mono text-neutral-500">
+                AI Vision Assisted · Aggregates for Municipal PWD Action
+              </p>
             </div>
           </div>
           <button onClick={onClose} className="text-neutral-400 hover:text-neutral-700">
@@ -90,6 +137,7 @@ export default function ReportHazardModal({ isOpen, onClose, defaultCoords, onHa
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Location Bar */}
           <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-xl space-y-2 text-xs">
             <div className="flex items-center justify-between">
               <span className="font-bold font-mono text-neutral-700">HAZARD LOCATION:</span>
@@ -108,14 +156,8 @@ export default function ReportHazardModal({ isOpen, onClose, defaultCoords, onHa
               {accuracy !== null && <span className="text-neutral-400"> (GPS ±{accuracy} m)</span>}
             </div>
             <div className="text-[11px] text-neutral-500">
-              Stand next to the hazard and use your location, or tap the hazard on the map first.
+              Stand next to the hazard or tap the exact spot on the map.
             </div>
-            {accuracy !== null && accuracy > 50 && (
-              <div className="text-[11px] text-amber-700 flex items-center gap-1">
-                <AlertCircle className="w-3 h-3 shrink-0" />
-                <span>GPS is weak here. Move to an open spot and try again for a better position.</span>
-              </div>
-            )}
             {locatingError && (
               <div className="text-[11px] text-amber-700 flex items-center gap-1">
                 <AlertCircle className="w-3 h-3 shrink-0" />
@@ -124,6 +166,58 @@ export default function ReportHazardModal({ isOpen, onClose, defaultCoords, onHa
             )}
           </div>
 
+          {/* AI Photo Scanner */}
+          <div className="border border-indigo-200 bg-indigo-50/50 rounded-xl p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-indigo-950 flex items-center gap-1.5 font-mono">
+                <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                <span>AWS BEDROCK AI DEFECT SCANNER</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="text-xs bg-white text-indigo-700 border border-indigo-300 hover:bg-indigo-50 px-2.5 py-1 rounded font-medium flex items-center gap-1 shadow-xs"
+              >
+                <Camera className="w-3 h-3" />
+                <span>{imagePreview ? 'Change Photo' : 'Upload Pothole Photo'}</span>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleImageSelected}
+                className="hidden"
+              />
+            </div>
+
+            {isAnalyzingPhoto && (
+              <div className="flex items-center gap-2 text-xs text-indigo-800 py-1 font-mono">
+                <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+                <span>Analyzing road fracture depth via Bedrock Vision...</span>
+              </div>
+            )}
+
+            {aiAnalysis && (
+              <div className="p-2.5 bg-white rounded-lg border border-indigo-200 text-xs space-y-1 font-mono">
+                <div className="flex items-center justify-between text-indigo-900 font-bold">
+                  <span>AI Classification: {aiAnalysis.detectedHazard?.replace('_', ' ').toUpperCase()}</span>
+                  <span className="text-[10px] bg-red-100 text-red-800 px-1.5 rounded">
+                    Risk: {aiAnalysis.twoWheelerRisk?.toUpperCase()}
+                  </span>
+                </div>
+                <div className="text-[11px] text-neutral-600">
+                  {aiAnalysis.reasoning}
+                </div>
+                {aiAnalysis.pwdRecommendation && (
+                  <div className="text-[10px] text-indigo-700 pt-0.5">
+                    <strong>PWD Action:</strong> {aiAnalysis.pwdRecommendation}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Hazard Type selector */}
           <div className="space-y-2">
             <label className="block text-xs font-bold text-neutral-700 uppercase tracking-wide">
               Hazard type
@@ -150,6 +244,7 @@ export default function ReportHazardModal({ isOpen, onClose, defaultCoords, onHa
             </div>
           </div>
 
+          {/* Description */}
           <div className="space-y-1.5">
             <label className="block text-xs font-bold text-neutral-700 uppercase tracking-wide">
               Landmark / notes
@@ -159,14 +254,14 @@ export default function ReportHazardModal({ isOpen, onClose, defaultCoords, onHa
               maxLength={300}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="e.g. Beside the tea stall, drain slab missing on the left edge."
+              placeholder="e.g. Beside the bus stop, deep 40cm crater damaging vehicle rims."
               className="w-full text-xs p-3 rounded-xl border border-neutral-300 focus:outline-none focus:ring-2 focus:ring-amber-500 font-sans"
             />
           </div>
 
           <div className="bg-amber-50/60 p-3 rounded-xl border border-amber-200 text-xs text-amber-900 leading-relaxed">
-            <strong>Why report on a dry day:</strong> in heavy rain, muddy water hides this spot.
-            WaterLine remembers where it is and warns riders when flooding is reported nearby.
+            <strong>Civic Aggregation:</strong> When multiple potholes are reported along this route,
+            the corridor is automatically bundled and escalated to the Public Works Department (PWD).
           </div>
 
           {submitError && (
@@ -190,7 +285,7 @@ export default function ReportHazardModal({ isOpen, onClose, defaultCoords, onHa
               className="bg-amber-600 hover:bg-amber-700 disabled:bg-neutral-300 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-sm transition-colors flex items-center gap-1.5"
             >
               {isSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <AlertOctagon className="w-3.5 h-3.5" />}
-              <span>Save Hazard</span>
+              <span>Save Hazard Pin</span>
             </button>
           </div>
         </form>
