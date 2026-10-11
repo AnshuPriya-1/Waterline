@@ -6,6 +6,6 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "npm --prefix frontend install --include=dev && npm --prefix frontend run build && rm -rf ./dist && cp -r frontend/dist ./dist"
+    "build": "rm -rf frontend/node_modules frontend/package-lock.json && npm --prefix frontend install --include=dev && npm --prefix frontend run build && rm -rf ./dist && cp -r frontend/dist ./dist"
   }
 }
