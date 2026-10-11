@@ -12,9 +12,8 @@ services:
         value: 22
 
   # 2. WaterLine Frontend Static Site
-  - type: web
+  - type: static
     name: waterline-frontend
-    runtime: static
     rootDir: frontend
     buildCommand: npm install && npm run build
     staticPublishPath: dist
@@ -22,3 +21,6 @@ services:
       - type: rewrite
         source: /*
         destination: /index.html
+    envVars:
+      - key: NODE_VERSION
+        value: 22
